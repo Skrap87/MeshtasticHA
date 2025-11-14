@@ -2,12 +2,70 @@
   "config": {
     "step": {
       "user": {
-        "title": "Set up Meshtastic USB",
-        "description": "Start monitoring connected USB devices."
+        "title": "Set up Meshtastic",
+        "description": "Choose how the Meshtastic node is connected.",
+        "data": {
+          "connection_type": "Connection type"
+        }
+      },
+      "serial": {
+        "title": "Configure serial connection",
+        "description": "Select the USB serial port and update interval.",
+        "data": {
+          "serial_port": "Serial port",
+          "update_interval": "Update interval (seconds)"
+        }
+      },
+      "tcp": {
+        "title": "Configure TCP connection",
+        "description": "Select how to configure the Meshtastic TCP node."
+      },
+      "tcp_manual": {
+        "title": "Manual TCP configuration",
+        "description": "Enter the host, port, and update interval for the Meshtastic node.",
+        "data": {
+          "tcp_host": "Host",
+          "tcp_port": "Port",
+          "update_interval": "Update interval (seconds)"
+        }
+      },
+      "tcp_discovery": {
+        "title": "Discover TCP devices",
+        "description": "Select one of the discovered Meshtastic nodes.",
+        "data": {
+          "device": "Device",
+          "update_interval": "Update interval (seconds)"
+        }
       }
     },
+    "menu": {
+      "tcp": {
+        "manual": "Enter host and port manually",
+        "discovery": "Discover devices on the network"
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to the Meshtastic node.",
+      "serial_port_not_found": "No Meshtastic-compatible serial device was found.",
+      "tcp_host_missing": "Host is required for TCP connections.",
+      "library_missing": "The Meshtastic Python library is not available.",
+      "serial_library_missing": "The pyserial library is not available.",
+      "no_devices_found": "No Meshtastic TCP devices were discovered.",
+      "device_not_found": "The selected device is no longer available."
+    },
     "abort": {
-      "single_instance_allowed": "Meshtastic USB is already configured."
+      "invalid_connection": "The selected connection type is not supported.",
+      "already_configured": "This Meshtastic node is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Meshtastic options",
+        "data": {
+          "update_interval": "Update interval (seconds)"
+        }
+      }
     }
   }
 }

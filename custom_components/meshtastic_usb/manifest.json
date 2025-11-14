@@ -1,6 +1,6 @@
 {
   "domain": "meshtastic_usb",
-  "name": "Meshtastic USB",
+  "name": "Meshtastic",
   "version": "2024.04.25.1400",
   "documentation": "https://github.com/Skrap87/MeshtasticHA",
   "issue_tracker": "https://github.com/Skrap87/MeshtasticHA/issues",

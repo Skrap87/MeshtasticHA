@@ -1,0 +1,49 @@
+send_message:
+  name: Send text message
+  description: Send a text message through the configured Meshtastic node.
+  fields:
+    entry_id:
+      name: Config entry
+      description: Optional config entry ID when multiple nodes are configured.
+      example: "a1b2c3d4e5f6"
+    target:
+      name: Target node
+      description: Destination node ID or leave empty for broadcast.
+      example: "!abcd1234"
+    message:
+      name: Message
+      description: Text payload to send.
+      required: true
+      example: "Hello from Home Assistant"
+
+reboot:
+  name: Reboot node
+  description: Reboot the selected Meshtastic node.
+  fields:
+    entry_id:
+      name: Config entry
+      description: Optional config entry ID when multiple nodes are configured.
+      example: "a1b2c3d4e5f6"
+
+set_channel:
+  name: Set primary channel
+  description: Change the primary channel by name on the Meshtastic node.
+  fields:
+    entry_id:
+      name: Config entry
+      description: Optional config entry ID when multiple nodes are configured.
+      example: "a1b2c3d4e5f6"
+    channel_name:
+      name: Channel name
+      description: Name of the channel to set as primary.
+      required: true
+      example: "LongFast"
+
+refresh:
+  name: Refresh node data
+  description: Request an immediate update from the Meshtastic node.
+  fields:
+    entry_id:
+      name: Config entry
+      description: Optional config entry ID when multiple nodes are configured.
+      example: "a1b2c3d4e5f6"
