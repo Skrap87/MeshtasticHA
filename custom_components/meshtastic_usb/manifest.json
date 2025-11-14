@@ -6,7 +6,7 @@
   "issue_tracker": "https://github.com/Skrap87/MeshtasticHA/issues",
   "requirements": [
     "pyserial==3.5",
-    "meshtastic @ git+https://github.com/meshtastic/Meshtastic-python@v2.2.27"
+    "meshtastic @ git+https://github.com/meshtastic/Meshtastic-python"
   ],
   "codeowners": ["@Skrap87"],
   "config_flow": true,
