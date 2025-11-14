@@ -1,4 +1,4 @@
-"""Version information for the Meshtastic USB integration."""
+"""Version information for the Meshtastic integration."""
 
 from __future__ import annotations
 
