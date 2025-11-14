@@ -1,4 +1,4 @@
-# Meshtastic Home Assistant Integration
+# Meshtastic Home Assistant Integration 
 
 This repository provides a custom Home Assistant integration for monitoring Meshtastic radios that are attached over USB. The integration automatically discovers supported adapters, connects to the radio using the Meshtastic Python API, and exposes detailed telemetry and message metadata in Home Assistant sensors.
 
