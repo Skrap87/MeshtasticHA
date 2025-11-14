@@ -192,7 +192,7 @@ def _read_meshtastic_details(device_path: str) -> MeshtasticNodeDetails:
     """Return node details for a Meshtastic radio connected to the given path."""
     from meshtastic.serial_interface import SerialInterface
 
-    interface = SerialInterface(device=device_path, noProto=False)
+    interface = SerialInterface(device_path, noProto=False)
     try:
         node_details = MeshtasticNodeDetails()
         my_info = getattr(interface, "myInfo", None)
