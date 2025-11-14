@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import logging
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN, PLATFORMS
 from .coordinator import MeshtasticUsbCoordinator
+from .version import __version__
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the Meshtastic USB component."""
     hass.data.setdefault(DOMAIN, {})
+    _LOGGER.debug("Setting up Meshtastic USB integration version %s", __version__)
     return True
 
 
