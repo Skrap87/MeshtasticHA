@@ -1,0 +1,8 @@
+{
+  "name": "Meshtastic USB",
+  "content_in_root": false,
+  "filename": "README.md",
+  "render_readme": true,
+  "domains": ["meshtastic_usb"],
+  "country": "GLOBAL"
+}
