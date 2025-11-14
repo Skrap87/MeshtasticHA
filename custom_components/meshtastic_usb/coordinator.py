@@ -1,0 +1,471 @@
+"""Data update coordinator for the Meshtastic USB integration."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from datetime import timedelta
+import logging
+from typing import Any
+
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+
+from serial.tools.list_ports_common import ListPortInfo
+
+from .const import (
+    ATTR_ERROR,
+    ATTR_NODE,
+    ATTR_USB,
+    DOMAIN,
+    GENERIC_UART_VID_PID,
+    IGNORED_PORT_PREFIXES,
+    MESHTASTIC_USB_CDC_VID_PID,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class UsbDevice:
+    """Representation of a USB serial device."""
+
+    device: str
+    description: str | None
+    hwid: str | None
+    manufacturer: str | None
+    product: str | None
+    serial_number: str | None
+    vid: int | None
+    pid: int | None
+    location: str | None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a dictionary with serializable values."""
+        data = asdict(self)
+        if self.vid is not None:
+            data["vid"] = f"0x{self.vid:04x}"
+        if self.pid is not None:
+            data["pid"] = f"0x{self.pid:04x}"
+        return {key: value for key, value in data.items() if value is not None}
+
+
+@dataclass
+class MeshtasticNodeDetails:
+    """Details retrieved from a Meshtastic node."""
+
+    firmware: str | None = None
+    node_num: int | None = None
+    hw_model: str | None = None
+    my_node_id: str | None = None
+    node_name: str | None = None
+    region: str | None = None
+    role: str | None = None
+    route_table_size: int | None = None
+    channel: str | None = None
+    channels: list[str] = field(default_factory=list)
+    ble_mac: str | None = None
+    ble_name: str | None = None
+    rssi: float | None = None
+    snr: float | None = None
+    airtime_utilization: float | None = None
+    last_message: str | None = None
+    last_sender: str | None = None
+    last_gateway: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Serialize the node details."""
+        data = asdict(self)
+        return {key: value for key, value in data.items() if value not in (None, [], "")}
+
+
+@dataclass
+class MeshtasticDevice:
+    """A Meshtastic-capable USB device and its node details."""
+
+    usb: UsbDevice
+    node: MeshtasticNodeDetails | None = None
+    error: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a serializable representation."""
+        data: dict[str, Any] = {ATTR_USB: self.usb.as_dict()}
+        if self.node:
+            data[ATTR_NODE] = self.node.as_dict()
+        if self.error:
+            data[ATTR_ERROR] = self.error
+        return data
+
+
+class MeshtasticUsbCoordinator(DataUpdateCoordinator[list[MeshtasticDevice]]):
+    """Coordinator that queries connected Meshtastic USB devices."""
+
+    def __init__(self, hass: HomeAssistant, update_interval: timedelta) -> None:
+        """Initialize the coordinator."""
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN} device scanner",
+            update_interval=update_interval,
+        )
+
+    async def _async_update_data(self) -> list[MeshtasticDevice]:
+        """Fetch the latest list of connected Meshtastic USB devices."""
+        return await self.hass.async_add_executor_job(_scan_meshtastic_devices)
+
+
+def _scan_meshtastic_devices() -> list[MeshtasticDevice]:
+    """Return the connected Meshtastic USB devices."""
+    from serial.tools.list_ports import comports
+
+    devices: list[MeshtasticDevice] = []
+    for port in comports():
+        if _should_ignore_port(port.device, port.description):
+            continue
+        usb_device = UsbDevice(
+            device=port.device,
+            description=port.description,
+            hwid=port.hwid,
+            manufacturer=getattr(port, "manufacturer", None),
+            product=getattr(port, "product", None),
+            serial_number=getattr(port, "serial_number", None),
+            vid=getattr(port, "vid", None),
+            pid=getattr(port, "pid", None),
+            location=getattr(port, "location", None),
+        )
+
+        device_entry = MeshtasticDevice(usb=usb_device)
+        if not is_meshtastic_api_port(port):
+            _LOGGER.debug("Filtered %s - not a Meshtastic USB API port", port.device)
+            device_entry.error = "Not a Meshtastic USB API device"
+            devices.append(device_entry)
+            continue
+
+        try:
+            node = _read_meshtastic_details(port.device)
+        except MeshtasticConnectionError as err:
+            device_entry.error = str(err)
+            _LOGGER.warning("Failed to read Meshtastic node on %s: %s", port.device, err)
+        except Exception as err:  # pragma: no cover - unexpected failure guard
+            device_entry.error = f"Unexpected error: {err}"
+            _LOGGER.exception("Unexpected error while reading Meshtastic node on %s", port.device)
+        else:
+            if validate_node_details(node):
+                device_entry.node = node
+            else:
+                device_entry.error = "Received invalid data from radio"
+                _LOGGER.warning(
+                    "Discarded invalid data from %s: %s", port.device, node.as_dict()
+                )
+        devices.append(device_entry)
+    return devices
+
+
+def is_meshtastic_api_port(port: ListPortInfo) -> bool:
+    """Return True if the serial port matches the Meshtastic USB API interface."""
+    device_path = getattr(port, "device", "") or ""
+    vid = getattr(port, "vid", None)
+    pid = getattr(port, "pid", None)
+
+    if not device_path:
+        return False
+
+    if device_path.startswith("/dev/ttyACM"):
+        _LOGGER.debug("Port %s accepted because it is a USB CDC device", device_path)
+        return True
+
+    if vid is None or pid is None:
+        _LOGGER.debug("Skipping %s - missing VID/PID information", device_path)
+        return False
+
+    if (vid, pid) in MESHTASTIC_USB_CDC_VID_PID:
+        _LOGGER.debug(
+            "Port %s accepted based on VID/PID match 0x%04x:0x%04x", device_path, vid, pid
+        )
+        return True
+
+    if (vid, pid) in GENERIC_UART_VID_PID:
+        _LOGGER.debug(
+            "Port %s rejected - generic UART bridge VID/PID 0x%04x:0x%04x",
+            device_path,
+            vid,
+            pid,
+        )
+        return False
+
+    _LOGGER.debug(
+        "Port %s rejected - unknown VID/PID 0x%04x:0x%04x", device_path, vid, pid
+    )
+    return False
+
+
+def _should_ignore_port(device: str, description: str | None) -> bool:
+    """Return True if the port should be ignored."""
+    for prefix in IGNORED_PORT_PREFIXES:
+        if device.startswith(prefix):
+            return True
+    if description and "virtualbox" in description.lower():
+        return True
+    return False
+
+
+def _protobuf_to_dict(message: Any) -> dict[str, Any]:
+    """Convert a protobuf message into a dictionary."""
+    if message is None:
+        return {}
+
+    try:
+        from google.protobuf.json_format import MessageToDict
+    except ImportError:  # pragma: no cover - Home Assistant bundles protobuf
+        MessageToDict = None
+
+    if MessageToDict is not None:
+        try:
+            return MessageToDict(message, preserving_proto_field_name=True)
+        except Exception:  # pragma: no cover - fallback below
+            pass
+
+    try:
+        fields: dict[str, Any] = {}
+        for descriptor, value in message.ListFields():
+            if hasattr(value, "ListFields"):
+                fields[descriptor.name] = _protobuf_to_dict(value)
+            elif isinstance(value, list):
+                fields[descriptor.name] = [
+                    _protobuf_to_dict(item) if hasattr(item, "ListFields") else item
+                    for item in value
+                ]
+            else:
+                fields[descriptor.name] = value
+        return fields
+    except Exception:  # pragma: no cover - last resort fallback
+        return {}
+
+
+class MeshtasticConnectionError(Exception):
+    """Raised when the Meshtastic node cannot be contacted over USB."""
+
+
+def _read_meshtastic_details(device_path: str) -> MeshtasticNodeDetails:
+    """Return node details for a Meshtastic radio connected to the given path."""
+    from meshtastic.serial_interface import SerialInterface
+
+    _LOGGER.debug("Opening Meshtastic interface on %s", device_path)
+    try:
+        interface = SerialInterface(device=device_path, noProto=False)
+    except Exception as err:  # noqa: E722  # pragma: no cover - library specific
+        raise MeshtasticConnectionError(f"Failed to open port: {err}") from err
+    try:
+        node_details = MeshtasticNodeDetails()
+        my_info = getattr(interface, "myInfo", None)
+        radio_config = getattr(interface, "radioConfig", None)
+        metadata = getattr(interface, "metadata", None)
+        nodes = getattr(interface, "nodes", {}) or {}
+        channels = getattr(interface, "channels", []) or []
+        last_received = getattr(interface, "lastReceived", None)
+
+        my_info_dict = _protobuf_to_dict(my_info)
+        radio_config_dict = _protobuf_to_dict(radio_config)
+        metadata_dict = _protobuf_to_dict(metadata)
+        last_received_dict = _protobuf_to_dict(last_received)
+
+        node_details.node_num = (
+            (metadata_dict or {}).get("my_node_num")
+            or my_info_dict.get("my_node_num")
+        )
+        node_details.firmware = (
+            (metadata_dict or {}).get("firmware_version")
+            or my_info_dict.get("firmware_version")
+        )
+        node_details.hw_model = (
+            (metadata_dict or {}).get("hw_model")
+            or my_info_dict.get("hw_model")
+        )
+        node_details.my_node_id = my_info_dict.get("my_node_id")
+
+        node_info = my_info_dict.get("node_info") or {}
+        user_info = node_info.get("user") or {}
+        node_details.node_name = user_info.get("long_name") or user_info.get("short_name")
+
+        # Если в myInfo нет имени/ID, пробуем вытащить их из nodes
+        if (not node_details.node_name or not node_details.my_node_id) and nodes:
+            # nodes ожидается как dict с обычными dict-ами внутри
+            my_node_entry = None
+
+            # Сначала пробуем ключом (строка или число)
+            if node_details.node_num is not None:
+                my_node_entry = nodes.get(node_details.node_num) or nodes.get(
+                    str(node_details.node_num)
+                )
+
+            # Если не нашли – ищем по полю "num" во всех значениях
+            if my_node_entry is None:
+                for candidate in nodes.values():
+                    # candidate уже dict
+                    if isinstance(candidate, dict) and candidate.get("num") == node_details.node_num:
+                        my_node_entry = candidate
+                        break
+
+            if isinstance(my_node_entry, dict):
+                user_from_nodes = my_node_entry.get("user") or {}
+                if not node_details.node_name:
+                    node_details.node_name = (
+                        user_from_nodes.get("long_name")
+                        or user_from_nodes.get("short_name")
+                        or user_from_nodes.get("longName")
+                        or user_from_nodes.get("shortName")
+                    )
+                if not node_details.my_node_id:
+                    node_details.my_node_id = user_from_nodes.get("id")
+
+        node_details.region = (
+            (metadata_dict or {}).get("region")
+            or my_info_dict.get("region")
+            or (radio_config_dict.get("preferences") or {}).get("region")
+        )
+        node_details.role = (
+            (metadata_dict or {}).get("role")
+            or (radio_config_dict.get("preferences") or {}).get("role")
+            or node_info.get("role")
+        )
+        node_details.route_table_size = len(nodes)
+
+        ble_info = my_info_dict.get("ble") or my_info_dict.get("ble_info") or {}
+        node_details.ble_mac = ble_info.get("macaddr") or ble_info.get("address") or ble_info.get("mac")
+        node_details.ble_name = ble_info.get("name") or ble_info.get("hostname")
+
+        node_details.channels = _extract_channel_names(channels)
+        if node_details.channels:
+            node_details.channel = node_details.channels[0]
+
+        metrics_dict = my_info_dict.get("node_metrics") or {}
+        node_details.rssi = (
+            metrics_dict.get("rssi")
+            or metrics_dict.get("rx_rssi")
+            or metrics_dict.get("last_heard_rssi")
+        )
+        node_details.snr = (
+            metrics_dict.get("snr")
+            or metrics_dict.get("rx_snr")
+            or metrics_dict.get("last_heard_snr")
+        )
+        node_details.airtime_utilization = (
+            metrics_dict.get("air_util_tx")
+            or metrics_dict.get("air_util")
+            or metrics_dict.get("airtime")
+        )
+
+        # Attempt to derive metrics from the node table if missing
+        if (node_details.rssi is None or node_details.snr is None) and nodes:
+            my_node = None
+            if node_details.node_num is not None:
+                my_node = nodes.get(node_details.node_num) or nodes.get(
+                    str(node_details.node_num)
+                )
+
+            if my_node is None:
+                for candidate in nodes.values():
+                    if isinstance(candidate, dict) and candidate.get("num") == node_details.node_num:
+                        my_node = candidate
+                        break
+
+            if isinstance(my_node, dict):
+                node_dict = my_node
+            else:
+                node_dict = _protobuf_to_dict(my_node)
+
+            node_details.rssi = (
+                node_details.rssi or node_dict.get("rssi") or node_dict.get("rx_rssi")
+            )
+            node_details.snr = (
+                node_details.snr or node_dict.get("snr") or node_dict.get("rx_snr")
+            )
+
+        decoded = last_received_dict.get("decoded") or {}
+        node_details.last_message = (
+            decoded.get("text")
+            or decoded.get("payload")
+            or decoded.get("data")
+        )
+        node_details.last_sender = last_received_dict.get("from") or last_received_dict.get("from_id")
+        node_details.last_gateway = last_received_dict.get("gateway_id") or last_received_dict.get("rx_gateway")
+
+        if node_details.my_node_id is None and node_details.node_num is not None:
+            node_details.my_node_id = f"!{node_details.node_num:08x}"
+
+        return node_details
+    except TimeoutError as err:
+        raise MeshtasticConnectionError("Timed out waiting for node response") from err
+    except (OSError, ValueError, RuntimeError) as err:
+        raise MeshtasticConnectionError(str(err)) from err
+    except Exception as err:  # pragma: no cover - unexpected
+        raise MeshtasticConnectionError(f"Unexpected error: {err}") from err
+    finally:
+        try:
+            interface.close()
+        except Exception:  # pragma: no cover - close best effort
+            _LOGGER.debug("Failed to close Meshtastic interface for %s", device_path, exc_info=True)
+
+
+def _extract_channel_names(channels: list[Any]) -> list[str]:
+    """Return a list of channel names from protobuf channel definitions."""
+    channel_names: list[str] = []
+    for channel in channels:
+        channel_dict = _protobuf_to_dict(channel)
+        name = (
+            (channel_dict.get("settings") or {}).get("name")
+            or channel_dict.get("name")
+        )
+        if name:
+            channel_names.append(name)
+    return channel_names
+
+
+def validate_node_details(details: MeshtasticNodeDetails) -> bool:
+    """Return True if the details appear to describe a real Meshtastic node."""
+
+    if not details.firmware or not isinstance(details.firmware, str):
+        return False
+
+    if not details.my_node_id or not isinstance(details.my_node_id, str):
+        return False
+
+    try:
+        node_num = int(details.node_num) if details.node_num is not None else None
+    except (TypeError, ValueError):
+        return False
+
+    if node_num is None or not (0 < node_num < 10_000_000):
+        return False
+
+    try:
+        route_table = (
+            int(details.route_table_size)
+            if details.route_table_size is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        return False
+
+    if route_table is not None and not (0 <= route_table <= 50):
+        return False
+
+    if details.channel is not None and not str(details.channel).strip():
+        return False
+
+    if details.rssi is not None:
+        try:
+            rssi = float(details.rssi)
+        except (TypeError, ValueError):
+            return False
+        if not (-200.0 <= rssi <= 0.0):
+            return False
+
+    if details.snr is not None:
+        try:
+            snr = float(details.snr)
+        except (TypeError, ValueError):
+            return False
+        if not (-50.0 <= snr <= 50.0):
+            return False
+
+    return True
