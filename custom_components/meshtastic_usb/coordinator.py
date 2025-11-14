@@ -10,16 +10,13 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from serial.tools.list_ports_common import ListPortInfo
-
 from .const import (
     ATTR_ERROR,
     ATTR_NODE,
     ATTR_USB,
     DOMAIN,
-    GENERIC_UART_VID_PID,
     IGNORED_PORT_PREFIXES,
-    MESHTASTIC_USB_CDC_VID_PID,
+    MESHTASTIC_VID_PID,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -121,6 +118,11 @@ def _scan_meshtastic_devices() -> list[MeshtasticDevice]:
     for port in comports():
         if _should_ignore_port(port.device, port.description):
             continue
+        if port.vid is None or port.pid is None:
+            continue
+        if (port.vid, port.pid) not in MESHTASTIC_VID_PID:
+            continue
+
         usb_device = UsbDevice(
             device=port.device,
             description=port.description,
@@ -134,68 +136,13 @@ def _scan_meshtastic_devices() -> list[MeshtasticDevice]:
         )
 
         device_entry = MeshtasticDevice(usb=usb_device)
-        if not is_meshtastic_api_port(port):
-            _LOGGER.debug("Filtered %s - not a Meshtastic USB API port", port.device)
-            device_entry.error = "Not a Meshtastic USB API device"
-            devices.append(device_entry)
-            continue
-
         try:
-            node = _read_meshtastic_details(port.device)
-        except MeshtasticConnectionError as err:
+            device_entry.node = _read_meshtastic_details(port.device)
+        except Exception as err:  # pylint: disable=broad-except
             device_entry.error = str(err)
-            _LOGGER.warning("Failed to read Meshtastic node on %s: %s", port.device, err)
-        except Exception as err:  # pragma: no cover - unexpected failure guard
-            device_entry.error = f"Unexpected error: {err}"
-            _LOGGER.exception("Unexpected error while reading Meshtastic node on %s", port.device)
-        else:
-            if validate_node_details(node):
-                device_entry.node = node
-            else:
-                device_entry.error = "Received invalid data from radio"
-                _LOGGER.warning(
-                    "Discarded invalid data from %s: %s", port.device, node.as_dict()
-                )
+            _LOGGER.error("Failed to read Meshtastic node on %s: %s", port.device, err)
         devices.append(device_entry)
     return devices
-
-
-def is_meshtastic_api_port(port: ListPortInfo) -> bool:
-    """Return True if the serial port matches the Meshtastic USB API interface."""
-    device_path = getattr(port, "device", "") or ""
-    vid = getattr(port, "vid", None)
-    pid = getattr(port, "pid", None)
-
-    if not device_path:
-        return False
-
-    if device_path.startswith("/dev/ttyACM"):
-        _LOGGER.debug("Port %s accepted because it is a USB CDC device", device_path)
-        return True
-
-    if vid is None or pid is None:
-        _LOGGER.debug("Skipping %s - missing VID/PID information", device_path)
-        return False
-
-    if (vid, pid) in MESHTASTIC_USB_CDC_VID_PID:
-        _LOGGER.debug(
-            "Port %s accepted based on VID/PID match 0x%04x:0x%04x", device_path, vid, pid
-        )
-        return True
-
-    if (vid, pid) in GENERIC_UART_VID_PID:
-        _LOGGER.debug(
-            "Port %s rejected - generic UART bridge VID/PID 0x%04x:0x%04x",
-            device_path,
-            vid,
-            pid,
-        )
-        return False
-
-    _LOGGER.debug(
-        "Port %s rejected - unknown VID/PID 0x%04x:0x%04x", device_path, vid, pid
-    )
-    return False
 
 
 def _should_ignore_port(device: str, description: str | None) -> bool:
@@ -241,19 +188,11 @@ def _protobuf_to_dict(message: Any) -> dict[str, Any]:
         return {}
 
 
-class MeshtasticConnectionError(Exception):
-    """Raised when the Meshtastic node cannot be contacted over USB."""
-
-
 def _read_meshtastic_details(device_path: str) -> MeshtasticNodeDetails:
     """Return node details for a Meshtastic radio connected to the given path."""
     from meshtastic.serial_interface import SerialInterface
 
-    _LOGGER.debug("Opening Meshtastic interface on %s", device_path)
-    try:
-        interface = SerialInterface(device=device_path, noProto=False)
-    except Exception as err:  # noqa: E722  # pragma: no cover - library specific
-        raise MeshtasticConnectionError(f"Failed to open port: {err}") from err
+    interface = SerialInterface(device_path, noProto=False)
     try:
         node_details = MeshtasticNodeDetails()
         my_info = getattr(interface, "myInfo", None)
@@ -327,12 +266,6 @@ def _read_meshtastic_details(device_path: str) -> MeshtasticNodeDetails:
         node_details.last_gateway = last_received_dict.get("gateway_id") or last_received_dict.get("rx_gateway")
 
         return node_details
-    except TimeoutError as err:
-        raise MeshtasticConnectionError("Timed out waiting for node response") from err
-    except (OSError, ValueError, RuntimeError) as err:
-        raise MeshtasticConnectionError(str(err)) from err
-    except Exception as err:  # pragma: no cover - unexpected
-        raise MeshtasticConnectionError(f"Unexpected error: {err}") from err
     finally:
         try:
             interface.close()
@@ -352,54 +285,3 @@ def _extract_channel_names(channels: list[Any]) -> list[str]:
         if name:
             channel_names.append(name)
     return channel_names
-
-
-def validate_node_details(details: MeshtasticNodeDetails) -> bool:
-    """Return True if the details appear to describe a real Meshtastic node."""
-
-    if not details.firmware or not isinstance(details.firmware, str):
-        return False
-
-    if not details.my_node_id or not isinstance(details.my_node_id, str):
-        return False
-
-    try:
-        node_num = int(details.node_num) if details.node_num is not None else None
-    except (TypeError, ValueError):
-        return False
-
-    if node_num is None or not (0 < node_num < 10_000_000):
-        return False
-
-    try:
-        route_table = (
-            int(details.route_table_size)
-            if details.route_table_size is not None
-            else None
-        )
-    except (TypeError, ValueError):
-        return False
-
-    if route_table is not None and not (0 <= route_table <= 50):
-        return False
-
-    if details.channel is not None and not str(details.channel).strip():
-        return False
-
-    if details.rssi is not None:
-        try:
-            rssi = float(details.rssi)
-        except (TypeError, ValueError):
-            return False
-        if not (-200.0 <= rssi <= 0.0):
-            return False
-
-    if details.snr is not None:
-        try:
-            snr = float(details.snr)
-        except (TypeError, ValueError):
-            return False
-        if not (-50.0 <= snr <= 50.0):
-            return False
-
-    return True
