@@ -1,0 +1,14 @@
+{
+  "domain": "meshtastic_usb",
+  "name": "Meshtastic USB",
+  "version": "0.2.0",
+  "documentation": "https://github.com/Skrap87/MeshtasticHA",
+  "issue_tracker": "https://github.com/Skrap87/MeshtasticHA/issues",
+  "requirements": [
+    "pyserial==3.5",
+    "meshtastic==2.2.27"
+  ],
+  "codeowners": ["@Skrap87"],
+  "config_flow": true,
+  "iot_class": "local_polling"
+}
