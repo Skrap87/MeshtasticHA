@@ -1,12 +1,12 @@
 {
   "domain": "meshtastic_usb",
   "name": "Meshtastic USB",
-  "version": "0.2.0",
+  "version": "2024.04.25.1105",
   "documentation": "https://github.com/Skrap87/MeshtasticHA",
   "issue_tracker": "https://github.com/Skrap87/MeshtasticHA/issues",
   "requirements": [
     "pyserial==3.5",
-    "meshtastic==2.2.27"
+    "meshtastic @ git+https://github.com/meshtastic/Meshtastic-python@v2.2.27"
   ],
   "codeowners": ["@Skrap87"],
   "config_flow": true,
